@@ -1,7 +1,28 @@
+/**
+ * This file is part of veraPDF Parser, a module of the veraPDF project.
+ * Copyright (c) 2015, veraPDF Consortium <info@verapdf.org>
+ * All rights reserved.
+ *
+ * veraPDF Parser is free software: you can redistribute it and/or modify
+ * it under the terms of either:
+ *
+ * The GNU General public license GPLv3+.
+ * You should have received a copy of the GNU General Public License
+ * along with veraPDF Parser as the LICENSE.GPL file in the root of the source
+ * tree.  If not, see http://www.gnu.org/licenses/ or
+ * https://www.gnu.org/licenses/gpl-3.0.en.html.
+ *
+ * The Mozilla Public License MPLv2+.
+ * You should have received a copy of the Mozilla Public License along with
+ * veraPDF Parser as the LICENSE.MPL file in the root of the source tree.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * http://mozilla.org/MPL/2.0/.
+ */
 package org.verapdf.pd;
 
 import org.verapdf.as.ASAtom;
 import org.verapdf.cos.*;
+import org.verapdf.pd.actions.PDPageAdditionalActions;
 import org.verapdf.pd.colors.PDColorSpace;
 
 import java.util.ArrayList;
@@ -55,38 +76,82 @@ public class PDPage extends PDPageTreeNode {
 
     private void initializeContents(final COSObject pageDict) {
         COSObject contents = pageDict.getKey(ASAtom.CONTENTS);
-        if (!contents.empty()) {
+        if (!contents.empty() && contents.getType() == COSObjType.COS_STREAM) {
             this.content = new PDPageContentStream(contents);
+        } else if (!contents.empty() && contents.getType() == COSObjType.COS_ARRAY) {
+            //TODO : add content streams concatenation
+            this.content = new PDPageContentStream(contents.at(0));
         }
     }
 
-    public void setBBox(final double[] bbox, final ASAtom boxType) {
-        this.getObject().setArrayKey(boxType, 4, bbox);
+    public double[] getMediaBox() {
+        COSArray array = getInheritedCOSBBox(ASAtom.MEDIA_BOX);
+        if (array != null) {
+            return getDoubleArrayForBox(array);
+        }
+        return null;
     }
 
-    public boolean getBBox(final double[] bbox, final ASAtom boxType) {
-        COSObject object = this.getKey(boxType);
-        if (!object.empty() && object.size() >= 4) {
-            for (int i = 0; i < 4; i++) {
-                bbox[i] = object.at(i).getReal();
-            }
-            return true;
+    public double[] getCropBox() {
+        COSArray array = getInheritedCOSBBox(ASAtom.CROP_BOX);
+        if (array != null) {
+            return clipToMediaBox(getDoubleArrayForBox(array));
         } else {
-            if (boxType == ASAtom.MEDIA_BOX) {
-                // if we are here this means that page media box is missing. Return then the default one
-                for (int i = 0; i < 4; i++) {
-                    bbox[i] = PDPage.PAGE_SIZE_LETTER[i];
-                }
-            } else if (boxType == ASAtom.CROP_BOX) {
-                this.getBBox(bbox, ASAtom.MEDIA_BOX);
-            } else if (boxType == ASAtom.BLEED_BOX || boxType == ASAtom.TRIM_BOX || boxType == ASAtom.ART_BOX) {
-                this.getBBox(bbox, ASAtom.CROP_BOX);
-            } else {
-                this.getBBox(bbox, ASAtom.MEDIA_BOX);
-            }
-
-            return false;
+            return getMediaBox();
         }
+    }
+
+    public double[] getBleedBox() {
+        COSArray array = getCOSBBox(ASAtom.BLEED_BOX);
+        if (array != null) {
+            return clipToMediaBox(getDoubleArrayForBox(array));
+        } else {
+            return getCropBox();
+        }
+    }
+
+    public double[] getTrimBox() {
+        COSArray array = getCOSBBox(ASAtom.TRIM_BOX);
+        if (array != null) {
+            return clipToMediaBox(getDoubleArrayForBox(array));
+        } else {
+            return getCropBox();
+        }
+    }
+
+    public double[] getArtBox() {
+        COSArray array = getCOSBBox(ASAtom.ART_BOX);
+        if (array != null) {
+            return clipToMediaBox(getDoubleArrayForBox(array));
+        } else {
+            return getCropBox();
+        }
+    }
+
+    private double[] clipToMediaBox(double[] box) {
+        double[] res = new double[4];
+        double[] mediaBox = getMediaBox();
+        res[0] = Math.max(box[0], mediaBox[0]);
+        res[1] = Math.max(box[1], mediaBox[1]);
+        res[2] = Math.min(box[2], mediaBox[2]);
+        res[3] = Math.min(box[3], mediaBox[3]);
+        return res;
+    }
+
+    private double[] getDoubleArrayForBox(COSArray array) {
+        if (array == null) {
+            return null;
+        }
+        double[] res = new double[4];
+        for (int i = 0; i < array.size(); ++i) {
+            COSObject obj = array.at(i);
+            if (obj.getType().isNumber()) {
+                res[i] = obj.getReal().doubleValue();
+            } else {
+                res[i] = 0;
+            }
+        }
+        return res;
     }
 
     public PDDocument getPDDocument() {
@@ -112,7 +177,7 @@ public class PDPage extends PDPageTreeNode {
     }
 
     public Boolean isInheritedResources() {
-        return getObject().knownKey(ASAtom.RESOURCES);
+        return !getObject().knownKey(ASAtom.RESOURCES);
     }
 
     public void setResources(PDResources resources) {
@@ -149,11 +214,11 @@ public class PDPage extends PDPageTreeNode {
     }
 
     public COSArray getCOSMediaBox() {
-        return getCOSBBox(ASAtom.MEDIA_BOX);
+        return getInheritedCOSBBox(ASAtom.MEDIA_BOX);
     }
 
     public COSArray getCOSCropBox() {
-        return getCOSBBox(ASAtom.CROP_BOX);
+        return getInheritedCOSBBox(ASAtom.CROP_BOX);
     }
 
     public COSArray getCOSBleedBox() {
@@ -171,10 +236,28 @@ public class PDPage extends PDPageTreeNode {
     private COSArray getCOSBBox(ASAtom type) {
         COSObject object = getKey(type);
         if (object != null && object.getType() == COSObjType.COS_ARRAY) {
-            return (COSArray) object.get();
+            return (COSArray) object.getDirectBase();
         }
         return null;
     }
+
+    private COSArray getInheritedCOSBBox(ASAtom type) {
+        COSObject current = getObject();
+        while (current != null && current.getType().isDictionaryBased()) {
+            COSObject object = current.getKey(type);
+            if (object != null && !object.empty()) {
+                if (object.getType() == COSObjType.COS_ARRAY) {
+                    return (COSArray) object.getDirectBase();
+                } else {
+                    return null;
+                }
+            } else {
+                current = current.getKey(ASAtom.PARENT);
+            }
+        }
+        return null;
+    }
+
 
     public COSObject getCOSPresSteps() {
         COSObject pres = getKey(ASAtom.PRES_STEPS);
@@ -183,43 +266,62 @@ public class PDPage extends PDPageTreeNode {
 
     public List<PDAnnotation> getAnnotations() {
         COSObject annots = getKey(ASAtom.ANNOTS);
-        if (annots != null && annots.getType() == COSObjType.COS_ARRAY) {
+        if (!annots.empty() && annots.getType() == COSObjType.COS_ARRAY) {
             List<PDAnnotation> res = new ArrayList<>();
-            for (COSObject annot : (COSArray) annots.get()) {
+            if (annots.isIndirect()) {
+                annots = annots.getDirect();
+            }
+            for (COSObject annot : (COSArray) annots.getDirectBase()) {
                 if (annot != null && annot.getType() == COSObjType.COS_DICT) {
                     res.add(new PDAnnotation(annot));
                 }
             }
             return Collections.unmodifiableList(res);
+        } else if (annots.empty()) {
+            annots = COSArray.construct();
+            this.setKey(ASAtom.ANNOTS, annots);
         }
         return Collections.emptyList();
     }
 
-    //TODO : implement this
-    /*
-    public PDResources getResources() {
-        COSObject resDict = getKey(ASAtom.RESOURCES);
-        COSDocument doc = getObject().getDocument();
-        if (resDict.Empty())
-        {
-            resDict = COSDictionary.construct();
-            COSObject ind = COSIndirect.construct(resDict, doc);
-            setKey(ASAtom.RESOURCES, ind);
-            return PDResources(ind, doc);
+    public PDPageAdditionalActions getAdditionalActions() {
+        COSObject aaDict = getKey(ASAtom.AA);
+        if (aaDict != null && aaDict.getType() == COSObjType.COS_DICT) {
+            return new PDPageAdditionalActions(aaDict);
         }
-        else
-            return PDResources(resDict, doc);
+        return null;
     }
-    */
 
     public int getPageNumber() {
         return pagesTotal;
     }
 
-    //TODO : implement this
-    /*
-    public String getLabel() {
-        return this.getPDDoc().getCatalog().getPageLabels().getLabel(getPageNumber());
+    public Long getRotation() {
+        COSObject current = getObject();
+        while (current != null && current.getType().isDictionaryBased()) {
+            COSObject object = current.getKey(ASAtom.ROTATE);
+            if (object != null && !object.empty()) {
+                if (object.getType() == COSObjType.COS_INTEGER) {
+                    return object.getInteger();
+                } else {
+                    return null;
+                }
+            } else {
+                current = current.getKey(ASAtom.PARENT);
+            }
+        }
+        return null;
     }
-    */
+
+    public Double getScaling() {
+        return getObject().getRealKey(ASAtom.PZ);
+    }
+
+    public PDMetadata getMetadata() {
+        COSObject obj = getKey(ASAtom.METADATA);
+        if (obj.getType() == COSObjType.COS_STREAM) {
+            return new PDMetadata(obj);
+        }
+        return null;
+    }
 }

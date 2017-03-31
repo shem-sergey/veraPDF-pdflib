@@ -1,3 +1,23 @@
+/**
+ * This file is part of veraPDF Parser, a module of the veraPDF project.
+ * Copyright (c) 2015, veraPDF Consortium <info@verapdf.org>
+ * All rights reserved.
+ *
+ * veraPDF Parser is free software: you can redistribute it and/or modify
+ * it under the terms of either:
+ *
+ * The GNU General public license GPLv3+.
+ * You should have received a copy of the GNU General Public License
+ * along with veraPDF Parser as the LICENSE.GPL file in the root of the source
+ * tree.  If not, see http://www.gnu.org/licenses/ or
+ * https://www.gnu.org/licenses/gpl-3.0.en.html.
+ *
+ * The Mozilla Public License MPLv2+.
+ * You should have received a copy of the Mozilla Public License along with
+ * veraPDF Parser as the LICENSE.MPL file in the root of the source tree.
+ * If a copy of the MPL was not distributed with this file, you can obtain one at
+ * http://mozilla.org/MPL/2.0/.
+ */
 package org.verapdf.as.filters.io;
 
 import org.verapdf.as.filters.ASInFilter;
@@ -64,10 +84,32 @@ public class ASBufferingInFilter extends ASInFilter {
      * @return amount of bytes actually placed into buffer.
      */
     public long feedBuffer(int bytesToRead) throws IOException {
+        if (this.getInputStream() == null) {
+            return -1;
+        }
         bytesToRead = Math.min(bytesToRead, bufferCapacity);
         long actuallyRead = this.getInputStream().read(internalBuffer, bytesToRead);
         bufferBegin = 0;
         bufferEnd = (int) actuallyRead;
+        return actuallyRead;
+    }
+
+    /**
+     * Reads next portion of data from the underlying stream and appends it to
+     * the end of data, contained in internal buffer.
+     *
+     * @param bytesToAdd amount of bytes to read.
+     * @return amount of bytes actually appended to buffer.
+     */
+    public long addToBuffer(int bytesToAdd) throws IOException {
+        if (this.getInputStream() == null) {
+            return -1;
+        }
+        bytesToAdd = Math.min(bytesToAdd, bufferCapacity - bufferEnd);
+        byte[] toAdd = new byte[bytesToAdd];
+        long actuallyRead = this.getInputStream().read(toAdd, bytesToAdd);
+        System.arraycopy(toAdd, 0, this.internalBuffer, bufferEnd, bytesToAdd);
+        bufferEnd += bytesToAdd;
         return actuallyRead;
     }
 
@@ -106,6 +148,9 @@ public class ASBufferingInFilter extends ASInFilter {
      */
     public int bufferPopArray(byte[] buffer, int read) throws IOException {
         int actualRead = Math.min(read, bufferSize());
+        if(actualRead == -1) {
+            return -1;
+        }
         if (buffer.length < actualRead) {
             throw new IOException("Passed buffer is too small");
         }
@@ -132,8 +177,8 @@ public class ASBufferingInFilter extends ASInFilter {
      * {@inheritDoc}
      */
     @Override
-    public void close() throws IOException {
-        super.close();
+    public void closeResource() throws IOException {
+        super.closeResource();
         bufferEnd = bufferBegin = 0;
     }
 
@@ -147,10 +192,10 @@ public class ASBufferingInFilter extends ASInFilter {
     }
 
     public static byte[] concatenate(byte[] one, int lengthOne, byte[] two, int lengthTwo) {
-        if(lengthTwo == -1) {
+        if (lengthTwo == -1) {
             lengthTwo = 0;
         }
-        if(lengthOne == -1) {
+        if (lengthOne == -1) {
             lengthOne = 0;
         }
         if (lengthOne == 0) {
@@ -166,5 +211,27 @@ public class ASBufferingInFilter extends ASInFilter {
     }
 
     protected void decode() throws IOException {
+    }
+
+    /**
+     * Skips given number of decoded bytes in stream.
+     *
+     * @param size is amount of bytes to skip.
+     * @return amount of actually skipped bytes.
+     * @throws IOException if stream-reading error occurs.
+     */
+    @Override
+    public int skip(int size) throws IOException {
+        byte[] temp = new byte[Math.min(BF_BUFFER_SIZE, size)];
+        int skipped = 0;
+        while (skipped != size) {
+            int read = this.read(temp, Math.min(size - skipped, BF_BUFFER_SIZE));
+            if (read == -1) {
+                return skipped;
+            } else {
+                skipped += read;
+            }
+        }
+        return skipped;
     }
 }
